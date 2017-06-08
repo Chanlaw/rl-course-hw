@@ -7,6 +7,7 @@ import tensorflow                as tf
 import tensorflow.contrib.layers as layers
 from collections import namedtuple
 from dqn_utils import *
+import time
 
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
 
@@ -126,9 +127,14 @@ def learn(env,
     # q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
     # Older versions of TensorFlow may require using "VARIABLES" instead of "GLOBAL_VARIABLES"
     ######
-    
-    # YOUR CODE HERE
+    Q_s = q_func(obs_t_float, num_actions, scope="q_func", reuse=False)
+    Q_sa = tf.reduce_sum(tf.one_hot(act_t_ph, num_actions) * Q_s, axis=1, name="Q_sa")
+    target_Q = q_func(obs_tp1_float, num_actions, scope="target_q_func", reuse=False)  
+    target = rew_t_ph + gamma*tf.multiply(tf.reduce_max(target_Q, axis=1), 1-done_mask_ph)
+    total_error = huber_loss(Q_sa - target)
 
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
     ######
 
     # construct optimization op (with gradient clipping)
@@ -156,7 +162,8 @@ def learn(env,
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
-
+    start_time = time.time()
+    Q = 0
     for t in itertools.count():
         ### 1. Check stopping criterion
         if stopping_criterion is not None and stopping_criterion(env, t):
@@ -193,9 +200,21 @@ def learn(env,
         # might as well be random, since you haven't trained your net...)
 
         #####
-        
-        # YOUR CODE HERE
-
+        idx = replay_buffer.store_frame(last_obs)
+        # take random action with probability epsilon
+        if np.random.rand() < exploration.value(t) or not model_initialized:
+            action = env.action_space.sample()
+        # otherwise take greedy action
+        else:
+            act = tf.argmax(Q_s, axis=1)
+            action, Q = session.run([act, Q_s], 
+                feed_dict={obs_t_ph:np.expand_dims(replay_buffer.encode_recent_observation(),axis=0)})
+            action = action[0]
+        obs, reward, done, info = env.step(action)
+        replay_buffer.store_effect(idx, action, reward, done)
+        last_obs = obs
+        if done:
+            env.reset()
         #####
 
         # at this point, the environment should have been advanced one step (and
@@ -243,9 +262,29 @@ def learn(env,
             # you should update every target_update_freq steps, and you may find the
             # variable num_param_updates useful for this (it was initialized to 0)
             #####
-            
-            # YOUR CODE HERE
+            obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
+            if not model_initialized:
+                initialize_interdependent_variables(session, tf.global_variables(), {
+                       obs_t_ph: obs_t_batch,
+                       obs_tp1_ph: obs_tp1_batch,
+                })
+                model_initialized = True
 
+            if num_param_updates % target_update_freq == 0:
+                session.run([train_fn, update_target_fn], feed_dict={obs_t_ph: obs_t_batch, 
+                                                                    act_t_ph: act_batch,
+                                                                    rew_t_ph: rew_batch,
+                                                                    obs_tp1_ph: obs_tp1_batch,
+                                                                    done_mask_ph: done_mask,
+                                                                    learning_rate: optimizer_spec.lr_schedule.value(t)})
+            else:
+                session.run([train_fn], feed_dict={obs_t_ph: obs_t_batch, 
+                                                    act_t_ph: act_batch,
+                                                    rew_t_ph: rew_batch,
+                                                    obs_tp1_ph: obs_tp1_batch,
+                                                    done_mask_ph: done_mask,
+                                                    learning_rate: optimizer_spec.lr_schedule.value(t)})
+            num_param_updates += 1
             #####
 
         ### 4. Log progress
@@ -255,7 +294,8 @@ def learn(env,
         if len(episode_rewards) > 100:
             best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
         if t % LOG_EVERY_N_STEPS == 0 and model_initialized:
-            print("Timestep %d" % (t,))
+            print("Timestep %d --- Time since last log %s seconds" % (t,time.time()-start_time))
+            start_time = time.time()
             print("mean reward (100 episodes) %f" % mean_episode_reward)
             print("best mean reward %f" % best_mean_episode_reward)
             print("episodes %d" % len(episode_rewards))

@@ -23,7 +23,7 @@ def atari_model(img_in, num_actions, scope, reuse=False):
             out = layers.convolution2d(out, num_outputs=64, kernel_size=3, stride=1, activation_fn=tf.nn.relu)
         out = layers.flatten(out)
         with tf.variable_scope("action_value"):
-            out = layers.fully_connected(out, num_outputs=512,         activation_fn=tf.nn.relu)
+            out = layers.fully_connected(out, num_outputs=256,         activation_fn=tf.nn.relu)
             out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
 
         return out
@@ -55,7 +55,7 @@ def atari_learn(env,
     exploration_schedule = PiecewiseSchedule(
         [
             (0, 1.0),
-            (1e6, 0.1),
+            (num_iterations/20, 0.1),
             (num_iterations / 2, 0.01),
         ], outside_value=0.01
     )
@@ -67,13 +67,13 @@ def atari_learn(env,
         session=session,
         exploration=exploration_schedule,
         stopping_criterion=stopping_criterion,
-        replay_buffer_size=1000000,
+        replay_buffer_size=100000,
         batch_size=32,
         gamma=0.99,
-        learning_starts=50000,
+        learning_starts=10000,
         learning_freq=4,
         frame_history_len=4,
-        target_update_freq=10000,
+        target_update_freq=1000,
         grad_norm_clipping=10
     )
     env.close()
